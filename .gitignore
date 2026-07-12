@@ -1,0 +1,41 @@
+# Local credentials and machine-specific state
+.local/
+.env
+.env.*
+!.env.example
+secrets/
+
+# Minecraft packages, worlds, and backups
+整合包/
+staging/
+client-packs/
+world/
+world_*/
+backups/
+*.zip
+*.mrpack
+
+# Runtime and diagnostic artifacts
+logs/
+*.log
+*.sparkprofile
+*.analysis.json
+spark-*.js
+spark-profile.headers
+spark-report-page.html
+
+# Application caches
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+dist/
+build/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
