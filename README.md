@@ -6,6 +6,10 @@
 
 - 普通成员和服主先阅读 [成员使用说明](docs/user/codex-workflow.md)。
 - 当前服务器概况见 [服务器概况](docs/user/server-overview.md)。
+- 完整备份部署包见 [备份与百度网盘上传](ops/backup/README.md)。
+- 第一次部署和交接见 [备份系统交接手册](ops/backup/HANDOFF.md)。
+- 正式服冷备份、Minecraft 自动恢复、百度网盘分卷续传和唯一自动 timer 已完成首次生产验收并启用；
+  当前状态及维护命令见 [备份 README](ops/backup/README.md)。
 - 历史部署和故障记录见 [历史记录](docs/history/README.md)。
 - Codex 会自动读取根目录的 `AGENTS.md`，成员无需把其中规则复制到每次对话。
 
