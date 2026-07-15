@@ -518,3 +518,99 @@
 - 系统状态：负载约 `0.08, 0.07, 0.02`，swap `0B / 1.4Gi`，没有明显系统级压力。
 - 内存状态：系统总内存约 `15Gi`，可用约 `4.4Gi`；systemd 显示 MC 服务当前内存约 `11.5G`，峰值约 `15.0G`。
 - 近期日志：看到 AllTheLeaks 持续报告 `ServerPlayer (minecraft): 203` 的疑似内存泄漏；同时有 Sable 定期保存子世界日志。最近多次 `ye_fan_233 lost connection: Disconnected`，但服务端本身仍在运行并可响应状态查询。
+
+### 2026-07-13 分层备份系统首次部署与阶段性验收
+
+- 目标：在不增加 Minecraft 模组的前提下，部署每小时本地热备份、连续无人在线 30 分钟后上传
+  百度网盘、本地保留 3 份和云端最多 100 份的备份系统。
+- 源码位置：仓库 `ops/backup/`；服务器部署副本位于 `/root/minecraft-backup-deploy`。
+- 环境确认：Minecraft 服务目录为 `/data/minecraft/hello-new-generation`，运行用户和组均为
+  `minecraft`，该用户 HOME 为 `/data/minecraft`，数据盘为 ext4。
+- 非标准存储排查：未发现符号链接、外部数据库配置、MySQL/MariaDB/PostgreSQL/Redis 服务或相关
+  监听端口。唯一命名为 `.db` 的文件是 FancyMenu 的 23 字节 ASCII 文本，不是数据库。
+- 百度网盘：官方 `bdpan 3.8.3` 安装在 `/data/minecraft/.local/bin/bdpan`，由 `minecraft` 用户
+  完成 OAuth 登录；网页端已在目标应用目录确认同名账号检查文件。未记录 Token 或账号秘密。
+- RCON：安装器备份并修改 `server.properties`，配置副本为
+  `/data/minecraft/hello-new-generation/server.properties.before-backup-20260712-183240`；密码文件为
+  `root:root 0600`。维护窗口重启后，RCON `list` 测试成功。公网不应映射 `25575`。
+- 本地热备份：通过 `minecraft-backup-now local` 完成。归档
+  `hello-new-generation_2026-07-13_02-51-58_+0800.tar.zst` 大小为 `3,216,938,664` 字节；
+  SHA-256 校验、归档完整读取、`server.properties` 和 `world/level.dat` 存在性均通过。
+- 安全状态：归档及标记属于 `minecraft:minecraft` 且权限为 `0600`；备份后再次执行 `save-on`
+  返回保存已开启，Minecraft 服务保持 `active`。
+- 离线上传测试：服务器时间 `2026-07-12 18:56:03 UTC` 首次检查开始 30 分钟安静期；
+  `18:58:55 UTC` 再次检查显示剩余 `1628` 秒，证明没有提前上传。
+- 当前暂停点：百度网盘大文件上传、离线稳定快照、共享锁和玩家公屏目视确认尚未验收；两个 timer
+  均未启用。本地约 3 GB 的归档及 `.sha256`、`.ready` 保留待处理。
+- 继续测试注意：暂停期间 timer 未运行，无法证明玩家没有短暂上线。恢复验收时必须删除旧的
+  `.offline-since` 和 `.offline-snapshot-for` 状态，从新的安静期开始，并让上传检查至少每 5 分钟
+  运行一次。详细命令见 `ops/backup/README.md` 的“晚点继续首次上传验收”。
+- 续测时发现原上传 timer 在系统启动很久以后临时 `start` 会立即消耗已经过期的 `OnBootSec=5min`
+  触发点，表现为 timer 虽为 `active`，但 `NEXT` 为 `-`，不会继续检查。源码已改为
+  `OnActiveSec=5min` 与 `OnUnitActiveSec=5min`，增加静态回归测试并重新部署；重新开始安静期后，
+  `NEXT` 正确显示为 `2026-07-13 01:12:43 UTC`。该修正不涉及 Minecraft 重启。
+- 新安静期在 `2026-07-13 01:38:22 UTC` 达标后开始离线快照，但 tar 严格检测到
+  `world` 在读取期间变化并以失败退出；脚本删除了 partial、恢复 `save-on`，没有生成或上传可疑
+  归档，Minecraft 保持 `active`。只读排查确认 `save-all flush` 在 `01:38:34` 保存多个世界数据，
+  但 `world/level.dat` 到 `01:38:45` 才更新；`world/data/civil/meta.nbt` 又在 `01:42:14` 独立更新。
+  曾试验在 flush 返回后等待 20 秒，同时保留严格变化检测。
+- 加入 20 秒等待后的复测仍失败：第二次 flush 在 `01:48:09` 完成，但 `world/level.dat` 在
+  `01:48:45` 再次更新，恰好比第一次的 `01:38:45` 晚 10 分钟。固定等待不能解决周期或异步写入，
+  因而该实验改动已从源码撤回；服务器 timer 保持停止，脚本继续 fail-closed。若要求原子一致性，
+  后续方案必须改为文件系统快照或经明确授权的停服冷备份。
+- 后续对正式服 jar 进行只读反编译：Sable 1.2.2 的 `/sable paused` 只设置
+  `SubLevelPhysicsSystem` 的 physics paused 状态，不暂停保存；Civillis 2.0.0 的管理员命令没有
+  save/flush/pause，内部 `NbtStorage` 使用 `ColdIOQueue`，`close()` 会关闭存储并最多等待异步队列
+  5 秒，不能在运行中安全调用后恢复。服主据此决定放弃热备份。
+- 新源码策略：唯一 timer 每 5 分钟检查玩家，连续离线 30 分钟后正常停止
+  `hello-new-generation.service`，制作 `_cold_` 冷备份，启动并等待 RCON 恢复后再上传；本地上限 3、
+  云端硬上限 100。旧小时热备份单元由安装器停用并移除，旧不带 `_cold_` 的归档不会进入新上传队列。
+- 新冷备份源码截至本记录仍只在 Windows 仓库中完成，尚未部署和执行正式服停启测试；服务器上的
+  上传 timer 应继续保持 inactive，首次部署必须按 `ops/backup/HANDOFF.md` 在批准窗口人工观察完整
+  停止、归档、恢复与上传流程。
+- 回滚：备份调度可通过停用两个 timer 和服务撤回；RCON 配置如需撤回，必须在无玩家的维护窗口中
+  使用上述 `server.properties` 副本谨慎恢复，具体步骤见 `ops/backup/HANDOFF.md`。
+
+### 2026-07-13 冷备份首次成功与 bdpan 大文件上传失败
+
+- 连续无人在线从 `05:44:12 UTC` 开始；`06:17:42 UTC` 最终检查通过后正常停止
+  `hello-new-generation.service`。
+- 冷归档从 `06:17:47` 到 `06:18:34`，生成
+  `hello-new-generation_cold_2026-07-13_14-17-47_+0800.tar.zst`，大小 `3,216,465,220`
+  字节，并生成 `.sha256` 与 `.ready`。
+- Minecraft 自动启动并在 `06:20:09 UTC` 恢复 active 与 RCON；正式服停机窗口约 2 分 27 秒。
+- bdpan 3.8.3 直接上传 3 GB 单文件到第 285 个分片时，在 `06:50:30 UTC` 报
+  `context deadline exceeded`。网盘目录没有可见的同名完整文件，本地 `.ready` 保留。
+- 失败后发现 timer 使用 `OnUnitActiveSec` 会在长任务退出时立即补跑，上传监视器也没有刷新玩家检查
+  连续性。正式 timer 已人工停止，Minecraft 保持 active。
+- 本地修正版改用 `OnUnitInactiveSec=5min`，上传期间每分钟刷新连续性；已有 `.ready` 时不再停服，
+  失败后退避 60 分钟。云端改为 256 MiB 分卷逐个上传并按远端大小验证，最后上传
+  `.parts.sha256` 作为完成标记，失败重试只补传缺失分卷。该修正版尚待重新部署与验收。
+- 分卷实测中 `part-000` 成功，`part-001` 首次因 HTTP 504 / `ERR-f57192` 失败；人工重试后
+  `part-001` 至 `part-006` 均成功并继续到 `part-007`，证明 256 MiB 分卷可以显著保留上传进度。
+  `part-007` 又因 HTTP 504 / `ERR-9c840c` 失败，本地分卷与 `.ready` 均保留，Minecraft 全程 active。
+- 再次人工重试时，父目录 `ls --json` 曾临时误判已存在的 `part-000` 为缺失并开始重复上传；操作员
+  立即停止服务。随后只读查询确认父目录默认 `--limit 1000` 且仅有 8 项，`part-000` 至 `part-006`
+  均存在并大小正确，因此不是分页遗漏，更可能是一次不完整或陈旧的目录响应。
+- 本地后续修正不再用父目录列表判断单个分卷：上传前对完整远端路径做两次精确查询，只有明确
+  `code=1 / 目录不存在` 才允许上传；名称、大小冲突、异常 JSON 或查询失败一律退避。上传后也用
+  精确路径复核。云端上限计数改为按 `--start/--limit 1000` 分页遍历。该版本已部署并通过在线
+  精确查询验收：已存在 `part-006` 返回 0，缺失 `part-007` 返回 1。
+- v3 续传时正确跳过了远端 `part-000`，但查询 `part-001` 时百度接口返回“初始化根目录失败:
+  context deadline exceeded”。脚本按不安全结果停止，没有重复上传。v4 将远端目录统计和精确路径
+  查询改为每隔 10 秒最多重试 4 次；全部失败后才进入原有 60 分钟退避，明确缺失的双查询规则不变。
+- v4 生产续传验收通过：远端目录统计前两次失败后自动重试成功；`part-000` 至 `part-008` 被精确
+  验证并跳过，`part-009` 一次上传失败后保留本地文件，再次运行时从缺失分卷继续。最终
+  `part-009` 至 `part-011`、归档 `.sha256` 和最后的 `.parts.sha256` 全部上传成功。
+- `2026-07-13 10:06:52 UTC` 日志确认 `Cloud multipart upload verified (1/100)`；本地 `.ready`
+  已改名为 `.uploaded`，临时分卷和本地分卷清单已删除，原始 3 GB 冷备份 SHA-256 复核为 `OK`。
+  远端完成清单大小为 1620 字节，Minecraft 为 active，上传服务与 timer 均为 inactive。
+- 首次全流程验收后正式启用唯一的 `minecraft-backup-upload.timer`；旧热备份单元不存在。第一次自动
+  调度在 `2026-07-13 10:16:50 UTC` 触发，确认 0 人在线后从零开始 30 分钟安静期，未立即停服；
+  Minecraft 为 active、任务服务为 inactive、timer 为 active，后续 5 分钟检查正常排程。
+- 后续维护入口统一扩展为 `minecraft-backup-now`：提供状态、日志、本地 SHA-256 校验、云端只读列表、
+  正常条件检查以及安全暂停/恢复。暂停不会强行中止正在运行的任务；恢复会先检查 Minecraft、RCON
+  和 bdpan，并清除观察计时从零重新等待 30 分钟。README 与交接手册已补充成功判据和禁止操作。
+- v5 维护入口已部署：11 项测试通过；生产调用 `status`、`logs`、自动分页 `cloud` 与 `resume` 成功。
+  云端完成清单汇总为 1 份、大小 1620 字节。恢复 timer 时有 1 名玩家在线，命令先清除旧观察状态
+  再安排下一次检查，避免沿用维护前的离线计时；Minecraft 保持 active。

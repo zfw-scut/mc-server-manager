@@ -1,0 +1,11 @@
+[Unit]
+Description=Check whether Minecraft may be cold-backed up and uploaded
+
+[Timer]
+OnActiveSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=minecraft-backup-upload.service
+
+[Install]
+WantedBy=timers.target
